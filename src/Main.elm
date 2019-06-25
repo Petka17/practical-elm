@@ -1,6 +1,7 @@
 module Main exposing (main)
 
 import Attrs exposing (..)
+import Auth
 import Browser
 import Browser.Events exposing (onKeyPress)
 import Colors exposing (..)
@@ -14,9 +15,11 @@ import Http
 import Json.Decode as Decode
 import Json.Encode as Encode
 import JsonPlan exposing (..)
+import PlanTree
 import Ports
 import SavedPlans exposing (..)
 import Time
+import Utils exposing (httpErrorString)
 
 
 
@@ -55,10 +58,7 @@ type Page
 
 type alias Model =
     { currPage : Page
-    , username : String
-    , password : String
-    , lastError : String
-    , sessionId : Maybe String
+    , auth : Auth.Model
     , plans : List SavedPlan
     , currPlanText : String
     , selectedNode : Maybe Plan
@@ -77,10 +77,7 @@ type alias Flags =
 init : Flags -> ( Model, Cmd Msg )
 init flags =
     ( { currPage = LoginPage
-      , username = ""
-      , password = ""
-      , lastError = ""
-      , sessionId = flags.sessionId
+      , auth = Auth.init flags.sessionId
       , plans = []
       , currPlanText = ""
       , selectedNode = Nothing
@@ -97,8 +94,7 @@ init flags =
 subscriptions : Model -> Sub Msg
 subscriptions _ =
     Sub.batch
-        [ Time.every (10 * 1000) SendHeartBeat
-        , onKeyPress decodeKey
+        [ onKeyPress decodeKey
         ]
 
 
@@ -130,10 +126,7 @@ keyToMsg pressedKey =
 
 type Msg
     = OpenLoginPage
-    | ChangeUserName String
-    | ChangePassword String
-    | StartLogin
-    | FinishLogin (Result Http.Error String)
+    | Auth Auth.Msg
     | RequestSavedPlans
     | FinishPlans (Result Http.Error (List SavedPlan))
     | ShowPlan String
@@ -159,35 +152,32 @@ update msg model =
             , Cmd.none
             )
 
-        ChangeUserName username ->
-            ( { model | username = username }, Cmd.none )
+        Auth authMsg ->
+            let
+                ( authModel, authCmd ) =
+                    Auth.update authMsg model.auth
 
-        ChangePassword password ->
-            ( { model | password = password }, Cmd.none )
+                currPage =
+                    case authMsg of
+                        Auth.FinishLogin (Ok _) ->
+                            InputPage
 
-        StartLogin ->
-            ( model, login model.username model.password )
-
-        FinishLogin (Ok sessionId) ->
+                        _ ->
+                            model.currPage
+            in
             ( { model
-                | sessionId = Just sessionId
-                , currPage = SavedPlanList
+                | auth = authModel
+                , currPage = currPage
               }
-            , Cmd.batch
-                [ requestPlans <| Just sessionId
-                , Ports.saveSessionId <| Just sessionId
-                ]
+            , Cmd.map Auth authCmd
             )
-
-        FinishLogin (Err err) ->
-            ( { model | lastError = httpErrorString err }, Cmd.none )
 
         RequestSavedPlans ->
             ( { model
                 | currPage = SavedPlanList
                 , isMenuOpen = False
               }
-            , requestPlans model.sessionId
+            , requestPlans model.auth.sessionId
             )
 
         FinishPlans (Ok plans) ->
@@ -231,50 +221,10 @@ update msg model =
             ( { model | isMenuOpen = not model.isMenuOpen }, Cmd.none )
 
         SendHeartBeat _ ->
-            ( model, sendHeartBeat model.sessionId )
+            ( model, sendHeartBeat model.auth.sessionId )
 
         NoOp ->
             ( model, Cmd.none )
-
-
-httpErrorString : Http.Error -> String
-httpErrorString err =
-    case err of
-        Http.BadBody message ->
-            "Unable to handle response: " ++ message
-
-        Http.BadStatus statusCode ->
-            "Server error: " ++ String.fromInt statusCode
-
-        Http.BadUrl url ->
-            "Invalid url: " ++ url
-
-        Http.NetworkError ->
-            "Nerwork Error"
-
-        Http.Timeout ->
-            "Request Timeout"
-
-
-login : String -> String -> Cmd Msg
-login username password =
-    let
-        body : Http.Body
-        body =
-            Http.jsonBody <|
-                Encode.object
-                    [ ( "username", Encode.string username )
-                    , ( "password", Encode.string password )
-                    ]
-
-        responseDecoder =
-            Decode.field "sessionId" Decode.string
-    in
-    Http.post
-        { url = serverUrl ++ "login"
-        , body = body
-        , expect = Http.expectJson FinishLogin responseDecoder
-        }
 
 
 requestPlans : Maybe String -> Cmd Msg
@@ -399,23 +349,23 @@ loginPage : Model -> Element Msg
 loginPage model =
     column [ paddingXY 0 20, spacingXY 0 10, width <| px 300, centerX ]
         [ Input.username inputField
-            { onChange = ChangeUserName
-            , text = model.username
+            { onChange = Auth << Auth.ChangeUserName
+            , text = model.auth.username
             , label = Input.labelAbove [] <| text "Username:"
             , placeholder = Nothing
             }
         , Input.currentPassword inputField
-            { onChange = ChangePassword
-            , text = model.password
+            { onChange = Auth << Auth.ChangePassword
+            , text = model.auth.password
             , label = Input.labelAbove [] <| text "Password:"
             , placeholder = Nothing
             , show = False
             }
         , Input.button greenButton
-            { onPress = Just StartLogin
+            { onPress = Just <| Auth Auth.StartLogin
             , label = el [ centerX ] <| text "Login"
             }
-        , el errorField <| text model.lastError
+        , el errorField <| text model.auth.lastError
         ]
 
 
@@ -515,162 +465,25 @@ inputPage model =
 displayPage : Model -> Element Msg
 displayPage model =
     let
-        tree : List (Element Msg)
-        tree =
+        content : Element Msg
+        content =
             case Decode.decodeString decodeJsonPlan model.currPlanText of
-                Ok { plan } ->
-                    planNodeTree plan
+                Ok jsonPlan ->
+                    PlanTree.render
+                        { onMouseEnterRow = MouseEnterPlanNode
+                        , onMouseLeftRow = MouseLeftPlanNode
+                        }
+                        jsonPlan
+                        model.selectedNode
 
                 Err err ->
-                    [ text <| Decode.errorToString err ]
-
-        details : List (Element Msg)
-        details =
-            case model.selectedNode of
-                Nothing ->
-                    [ text "" ]
-
-                Just plan ->
-                    detailPanelContent plan
+                    text <| Decode.errorToString err
     in
     column [ width fill ]
-        [ Input.button [ paddingXY 10 0 ]
+        [ Input.button
+            (grayButton ++ [ paddingXY 10 0 ])
             { onPress = Just GoBack
             , label = el [ centerX ] <| text "Back"
             }
-        , row
-            [ width fill
-            , paddingEach <| EachSide 20 0 0 0
-            ]
-            [ column
-                [ width (fillPortion 7)
-                , height fill
-                , alignTop
-                ]
-                tree
-            , column
-                [ width (fillPortion 3 |> maximum 500)
-                , height fill
-                , alignTop
-                , padding 5
-                , Border.widthEach <| EachSide 0 0 0 1
-                , Border.color grey
-                ]
-                details
-            ]
+        , content
         ]
-
-
-planNodeTree : Plan -> List (Element Msg)
-planNodeTree plan =
-    let
-        nodeTypeEl nodeType =
-            el [ Font.bold ] <| text nodeType
-
-        treeNode node nodeDetails =
-            [ el
-                [ Border.widthEach <| EachSide 0 0 1 0
-                , Border.color lightBlue
-                , mouseOver [ Background.color lightYellow ]
-                , padding 4
-                , onMouseEnter <| MouseEnterPlanNode plan
-                , onMouseLeave <| MouseLeftPlanNode
-                ]
-              <|
-                paragraph [] (nodeTypeEl node.common.nodeType :: nodeDetails)
-            , childNodeTree node.common.plans
-            ]
-    in
-    case plan of
-        PCte cteNode ->
-            treeNode cteNode
-                [ text " on "
-                , el [ Font.italic ] <| text cteNode.cteName
-                , text <| " (" ++ cteNode.alias_ ++ ")"
-                ]
-
-        PResult resultNode ->
-            treeNode resultNode
-                []
-
-        PSeqScan seqScanNode ->
-            treeNode seqScanNode
-                [ text " on "
-                , el [ Font.italic ] <| text seqScanNode.relationName
-                , text <| " (" ++ seqScanNode.alias_ ++ ")"
-                ]
-
-        PSort sortNode ->
-            treeNode sortNode
-                [ text " on "
-                , el [ Font.italic ] <| text <| String.join ", " sortNode.sortKey
-                ]
-
-        PGeneric genericNode ->
-            treeNode { common = genericNode } []
-
-
-childNodeTree : Plans -> Element Msg
-childNodeTree (Plans plans) =
-    column [ paddingEach <| EachSide 0 0 0 20 ] <|
-        List.concatMap planNodeTree plans
-
-
-detailPanelContent : Plan -> List (Element Msg)
-detailPanelContent plan =
-    let
-        attr : String -> String -> Element Msg
-        attr name value =
-            wrappedRow [ width fill ]
-                [ el
-                    [ width <| px 200
-                    , paddingEach <| EachSide 3 10 3 10
-                    , alignTop
-                    ]
-                  <|
-                    text name
-                , paragraph [ width fill, Font.bold, scrollbarX ] [ text value ]
-                ]
-
-        header : String -> Element Msg
-        header name =
-            el [ paddingEach <| EachSide 10 0 5 10 ] <|
-                el
-                    [ Font.bold
-                    , Border.widthEach <| EachSide 0 0 1 0
-                    ]
-                <|
-                    text name
-
-        commonAttrs : CommonFields -> List (Element Msg)
-        commonAttrs common =
-            [ attr "Startup Cost" <| String.fromFloat common.startupCost
-            , attr "Total Cost" <| String.fromFloat common.totalCost
-            , attr "Schema" <| common.schema
-            ]
-    in
-    case plan of
-        PCte node ->
-            commonAttrs node.common
-
-        PResult node ->
-            commonAttrs node.common
-
-        PSeqScan node ->
-            commonAttrs node.common
-                ++ [ header "Filter"
-                   , attr "Filter" node.filter
-                   , attr "Width" <| String.fromInt node.rowsRemovedByFilter
-                   ]
-
-        PSort node ->
-            commonAttrs node.common
-                ++ [ header "Sort"
-                   , attr "Sort Key" <| String.join ", " node.sortKey
-                   , attr "Sort Method" node.sortMethod
-                   , attr "Sort Space Type" node.sortSpaceType
-                   , attr "Sort Space Used" <| String.fromInt node.sortSpaceUsed
-                   ]
-
-        PGeneric node ->
-            commonAttrs node
