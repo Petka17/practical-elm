@@ -198,10 +198,10 @@ update msg model =
             let
                 newModel =
                     case model.currPage of
-                        DisplayPage displayModel ->
+                        DisplayPage _ ->
                             { model
                                 | currPage =
-                                    DisplayPage <| DisplayPage.update innerMsg displayModel
+                                    DisplayPage <| DisplayPage.update innerMsg
                             }
 
                         _ ->

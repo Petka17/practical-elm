@@ -33,8 +33,8 @@ type Msg
     | MouseLeftPlanNode
 
 
-update : Msg -> Model -> Model
-update msg model =
+update : Msg -> Model
+update msg =
     case msg of
         MouseEnterPlanNode plan ->
             Just plan
