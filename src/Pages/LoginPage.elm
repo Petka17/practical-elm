@@ -1,4 +1,4 @@
-module Auth exposing (Model, Msg(..), init, login, update)
+module Page.LoginPage exposing (Model, Msg(..), init, login, update)
 
 import Http
 import Json.Decode as Decode
@@ -6,6 +6,10 @@ import Json.Encode as Encode
 import Ports exposing (..)
 import Settings
 import Utils exposing (httpErrorString)
+
+
+
+-- MODEL
 
 
 type alias Model =
@@ -23,6 +27,10 @@ init sessionId =
     , sessionId = sessionId
     , lastError = ""
     }
+
+
+
+-- UPDATE
 
 
 type Msg
@@ -104,3 +112,5 @@ login username password =
 --         , tracker = Nothing
 --         , expect = Http.expectWhatever <| always NoOp
 --         }
+--
+-- VIEW

@@ -1,4 +1,4 @@
-module PlanTree exposing (render)
+module Pages.DisplayPage exposing (Model, Msg, init, render, update)
 
 import Attrs exposing (..)
 import Colors exposing (..)
@@ -7,19 +7,62 @@ import Element.Background as Background
 import Element.Border as Border
 import Element.Events exposing (..)
 import Element.Font as Font
+import Json.Decode as Decode
 import JsonPlan exposing (..)
 
 
-type alias Config msg =
-    { onMouseEnterRow : Plan -> msg
-    , onMouseLeftRow : msg
-    }
+
+-- MODEL
 
 
-render : Config msg -> PlanJson -> Maybe Plan -> Element msg
-render config planJson selectedNode =
+type alias Model =
+    Maybe Plan
+
+
+init : Model
+init =
+    Nothing
+
+
+
+-- UPDATE
+
+
+type Msg
+    = MouseEnterPlanNode Plan
+    | MouseLeftPlanNode
+
+
+update : Msg -> Model -> Model
+update msg model =
+    case msg of
+        MouseEnterPlanNode plan ->
+            Just plan
+
+        MouseLeftPlanNode ->
+            Nothing
+
+
+
+-- VIEW
+
+
+render : { a | currPlanText : String } -> Model -> Element Msg
+render { currPlanText } selectedNode =
+    case Decode.decodeString decodeJsonPlan currPlanText of
+        Ok jsonPlan ->
+            renderTreeContent
+                jsonPlan
+                selectedNode
+
+        Err err ->
+            text <| Decode.errorToString err
+
+
+renderTreeContent : PlanJson -> Maybe Plan -> Element Msg
+renderTreeContent planJson selectedNode =
     let
-        details : List (Element msg)
+        details : List (Element Msg)
         details =
             case selectedNode of
                 Nothing ->
@@ -38,7 +81,7 @@ render config planJson selectedNode =
             , alignTop
             ]
           <|
-            planNodeTree config planJson.plan
+            planNodeTree planJson.plan
         , column
             [ width (fillPortion 3 |> maximum 500)
             , height fill
@@ -51,8 +94,8 @@ render config planJson selectedNode =
         ]
 
 
-planNodeTree : Config msg -> Plan -> List (Element msg)
-planNodeTree ({ onMouseEnterRow, onMouseLeftRow } as config) plan =
+planNodeTree : Plan -> List (Element Msg)
+planNodeTree plan =
     let
         nodeTypeEl nodeType =
             el [ Font.bold ] <| text nodeType
@@ -63,12 +106,12 @@ planNodeTree ({ onMouseEnterRow, onMouseLeftRow } as config) plan =
                 , Border.color lightBlue
                 , mouseOver [ Background.color lightYellow ]
                 , padding 4
-                , onMouseEnter <| onMouseEnterRow plan
-                , onMouseLeave <| onMouseLeftRow
+                , onMouseEnter <| MouseEnterPlanNode plan
+                , onMouseLeave <| MouseLeftPlanNode
                 ]
               <|
                 paragraph [] (nodeTypeEl node.common.nodeType :: nodeDetails)
-            , childNodeTree config node.common.plans
+            , childNodeTree node.common.plans
             ]
     in
     case plan of
@@ -100,13 +143,13 @@ planNodeTree ({ onMouseEnterRow, onMouseLeftRow } as config) plan =
             treeNode { common = genericNode } []
 
 
-childNodeTree : Config msg -> Plans -> Element msg
-childNodeTree config (Plans plans) =
+childNodeTree : Plans -> Element Msg
+childNodeTree (Plans plans) =
     column [ paddingEach <| EachSide 0 0 0 20 ] <|
-        List.concatMap (planNodeTree config) plans
+        List.concatMap planNodeTree plans
 
 
-detailPanelContent : Plan -> List (Element msg)
+detailPanelContent : Plan -> List (Element Msg)
 detailPanelContent plan =
     let
         attr : String -> String -> Element msg

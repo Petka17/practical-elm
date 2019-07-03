@@ -11,24 +11,11 @@ import Element.Border as Border
 import Element.Events exposing (..)
 import Element.Font as Font
 import Element.Input as Input
-import Http
 import Json.Decode as Decode
-import Json.Encode as Encode
 import JsonPlan exposing (..)
-import PlanTree
-import Ports
+import Pages.DisplayPage as DisplayPage
+import Pages.SavedPlansPage as SavedPlansPage
 import SavedPlans exposing (..)
-import Time
-import Utils exposing (httpErrorString)
-
-
-
--- CONSTANTS
-
-
-serverUrl : String
-serverUrl =
-    "http://localhost:3000/"
 
 
 
@@ -51,17 +38,16 @@ main =
 
 type Page
     = LoginPage
-    | SavedPlanList
+    | SavedPlansPage SavedPlansPage.Model
     | InputPage
-    | DisplayPage
+    | DisplayPage DisplayPage.Model
+    | RegistrationPage
 
 
 type alias Model =
     { currPage : Page
-    , auth : Auth.Model
-    , plans : List SavedPlan
     , currPlanText : String
-    , selectedNode : Maybe Plan
+    , auth : Auth.Model
     , isMenuOpen : Bool
     }
 
@@ -71,17 +57,15 @@ type alias Model =
 
 
 type alias Flags =
-    { sessionId : Maybe String }
+    Maybe String
 
 
 init : Flags -> ( Model, Cmd Msg )
 init flags =
     ( { currPage = LoginPage
-      , auth = Auth.init flags.sessionId
-      , plans = []
-      , currPlanText = ""
-      , selectedNode = Nothing
+      , auth = Auth.init flags
       , isMenuOpen = False
+      , currPlanText = ""
       }
     , Cmd.none
     )
@@ -92,10 +76,12 @@ init flags =
 
 
 subscriptions : Model -> Sub Msg
-subscriptions _ =
-    Sub.batch
-        [ onKeyPress decodeKey
-        ]
+subscriptions model =
+    if model.currPage == LoginPage then
+        Sub.none
+
+    else
+        onKeyPress decodeKey
 
 
 decodeKey : Decode.Decoder Msg
@@ -111,7 +97,7 @@ keyToMsg : ( Bool, Bool, String ) -> Msg
 keyToMsg pressedKey =
     case pressedKey of
         ( True, True, "KeyS" ) ->
-            RequestSavedPlans
+            OpenSavedPlans
 
         ( True, True, "KeyN" ) ->
             OpenInputPage
@@ -127,17 +113,13 @@ keyToMsg pressedKey =
 type Msg
     = OpenLoginPage
     | Auth Auth.Msg
-    | RequestSavedPlans
-    | FinishPlans (Result Http.Error (List SavedPlan))
-    | ShowPlan String
+    | OpenSavedPlans
+    | SavedPlans SavedPlansPage.Msg
+    | Display DisplayPage.Msg
     | ChangePlanText String
     | OpenInputPage
     | SubmitPlan
-    | GoBack
-    | MouseEnterPlanNode Plan
-    | MouseLeftPlanNode
     | ToggleMenu
-    | SendHeartBeat Time.Posix
     | NoOp
 
 
@@ -172,27 +154,60 @@ update msg model =
             , Cmd.map Auth authCmd
             )
 
-        RequestSavedPlans ->
-            ( { model
-                | currPage = SavedPlanList
-                , isMenuOpen = False
-              }
-            , requestPlans model.auth.sessionId
+        OpenSavedPlans ->
+            let
+                ( pageModel, pageCmd ) =
+                    SavedPlansPage.init model.auth.sessionId
+            in
+            ( { model | currPage = SavedPlansPage pageModel }
+            , Cmd.map SavedPlans pageCmd
             )
 
-        FinishPlans (Ok plans) ->
-            ( { model | plans = plans }, Cmd.none )
+        SavedPlans innerMsg ->
+            case innerMsg of
+                SavedPlansPage.ShowPlan planText ->
+                    ( { model
+                        | currPage = DisplayPage <| DisplayPage.init
+                        , currPlanText = planText
+                      }
+                    , Cmd.none
+                    )
 
-        FinishPlans (Err err) ->
-            ( model, Cmd.none )
+                _ ->
+                    let
+                        ( newModel, newCmd ) =
+                            case model.currPage of
+                                SavedPlansPage innerModel ->
+                                    let
+                                        ( newInnerModel, newInnerCmd ) =
+                                            SavedPlansPage.update innerMsg innerModel
+                                    in
+                                    ( { model
+                                        | currPage = SavedPlansPage newInnerModel
+                                        , isMenuOpen = False
+                                      }
+                                    , Cmd.map SavedPlans newInnerCmd
+                                    )
 
-        ShowPlan plan ->
-            ( { model
-                | currPage = DisplayPage
-                , currPlanText = plan
-              }
-            , Cmd.none
-            )
+                                _ ->
+                                    ( model, Cmd.none )
+                    in
+                    ( newModel, newCmd )
+
+        Display innerMsg ->
+            let
+                newModel =
+                    case model.currPage of
+                        DisplayPage displayModel ->
+                            { model
+                                | currPage =
+                                    DisplayPage <| DisplayPage.update innerMsg displayModel
+                            }
+
+                        _ ->
+                            model
+            in
+            ( newModel, Cmd.none )
 
         OpenInputPage ->
             ( { model
@@ -202,55 +217,17 @@ update msg model =
             , Cmd.none
             )
 
-        ChangePlanText plan ->
-            ( { model | currPlanText = plan }, Cmd.none )
+        ChangePlanText planText ->
+            ( { model | currPlanText = planText }, Cmd.none )
 
         SubmitPlan ->
-            ( { model | currPage = DisplayPage }, Cmd.none )
-
-        GoBack ->
-            ( { model | currPage = InputPage }, Cmd.none )
-
-        MouseEnterPlanNode plan ->
-            ( { model | selectedNode = Just plan }, Cmd.none )
-
-        MouseLeftPlanNode ->
-            ( { model | selectedNode = Nothing }, Cmd.none )
+            ( { model | currPage = DisplayPage DisplayPage.init }, Cmd.none )
 
         ToggleMenu ->
             ( { model | isMenuOpen = not model.isMenuOpen }, Cmd.none )
 
-        SendHeartBeat _ ->
-            ( model, sendHeartBeat model.auth.sessionId )
-
         NoOp ->
             ( model, Cmd.none )
-
-
-requestPlans : Maybe String -> Cmd Msg
-requestPlans sessionId =
-    Http.request
-        { method = "GET"
-        , headers = [ Http.header "SessionId" <| Maybe.withDefault "" sessionId ]
-        , url = serverUrl ++ "plans"
-        , body = Http.emptyBody
-        , timeout = Nothing
-        , tracker = Nothing
-        , expect = Http.expectJson FinishPlans decodeSavedPlans
-        }
-
-
-sendHeartBeat : Maybe String -> Cmd Msg
-sendHeartBeat sessionId =
-    Http.request
-        { method = "POST"
-        , headers = [ Http.header "SessionId" <| Maybe.withDefault "" sessionId ]
-        , url = serverUrl ++ "heartbeat"
-        , body = Http.emptyBody
-        , timeout = Nothing
-        , tracker = Nothing
-        , expect = Http.expectWhatever <| always NoOp
-        }
 
 
 
@@ -262,8 +239,9 @@ view model =
     let
         content =
             case model.currPage of
-                DisplayPage ->
-                    displayPage model
+                DisplayPage pageModel ->
+                    DisplayPage.render model pageModel
+                        |> Element.map Display
 
                 InputPage ->
                     inputPage model
@@ -271,12 +249,16 @@ view model =
                 LoginPage ->
                     loginPage model
 
-                SavedPlanList ->
-                    savedPlanList model
+                SavedPlansPage pageModel ->
+                    SavedPlansPage.render pageModel
+                        |> Element.map SavedPlans
+
+                RegistrationPage ->
+                    Debug.todo "RegistrationPage"
     in
     { title = "VisExp"
     , body =
-        [ layout [ inFront <| menuPanel model ] <|
+        [ layout [ inFront <| menuPanel model.isMenuOpen ] <|
             column [ width fill, spacingXY 0 20 ]
                 [ navBar
                 , content
@@ -302,8 +284,8 @@ navBar =
         ]
 
 
-menuPanel : Model -> Element Msg
-menuPanel model =
+menuPanel : Bool -> Element Msg
+menuPanel isOpen =
     let
         panel =
             column
@@ -325,7 +307,7 @@ menuPanel model =
                 , spacingXY 0 20
                 ]
                 [ el [ pointer, onClick OpenInputPage ] <| text "New Plan"
-                , el [ pointer, onClick RequestSavedPlans ] <| text "Saved Plans"
+                , el [ pointer, onClick OpenSavedPlans ] <| text "Saved Plans"
                 , el [ pointer, onClick OpenLoginPage ] <| text "Login"
                 ]
 
@@ -338,7 +320,7 @@ menuPanel model =
                 ]
                 none
     in
-    if model.isMenuOpen then
+    if isOpen then
         row [ width fill, height fill ] [ overlay, panel ]
 
     else
@@ -369,66 +351,8 @@ loginPage model =
         ]
 
 
-type alias PlanVersionExt =
-    { name : String, createdAt : String, version : Int, planText : String }
-
-
-savedPlanList : Model -> Element Msg
-savedPlanList model =
-    let
-        annotateVersion : String -> PlanVersion -> PlanVersionExt
-        annotateVersion name { createdAt, version, planText } =
-            PlanVersionExt name createdAt version planText
-
-        annotateVersions : SavedPlan -> List PlanVersionExt
-        annotateVersions { versions, name } =
-            versions |> List.map (annotateVersion name)
-
-        tableAttrs : List (Attribute msg)
-        tableAttrs =
-            [ width <| px 800
-            , paddingEach <| EachSide 10 10 50 10
-            , spacingXY 10 10
-            , centerX
-            ]
-
-        headerAttrs =
-            [ Background.color lightGrey
-            , Border.color darkCharcoal
-            , Border.widthEach <| EachSide 0 0 1 0
-            , Font.bold
-            , centerX
-            ]
-    in
-    table tableAttrs
-        { data = List.concatMap annotateVersions model.plans
-        , columns =
-            [ { header = el headerAttrs <| text "Plan Name"
-              , width = fill
-              , view =
-                    \plan ->
-                        el
-                            [ Font.underline
-                            , mouseOver [ Font.color lightCharcoal ]
-                            , onClick <| ShowPlan plan.planText
-                            ]
-                        <|
-                            text plan.name
-              }
-            , { header = el headerAttrs <| text "Creation time"
-              , width = fill
-              , view = .createdAt >> text
-              }
-            , { header = el headerAttrs <| text "Version"
-              , width = fill
-              , view = .version >> String.fromInt >> text
-              }
-            ]
-        }
-
-
 inputPage : Model -> Element Msg
-inputPage model =
+inputPage { currPlanText } =
     column
         [ width <| px 600
         , spacingXY 0 10
@@ -442,7 +366,7 @@ inputPage model =
             , padding 10
             ]
             { onChange = ChangePlanText
-            , text = model.currPlanText
+            , text = currPlanText
             , placeholder = Nothing
             , spellcheck = False
             , label =
@@ -459,31 +383,4 @@ inputPage model =
             { onPress = Just SubmitPlan
             , label = el [ centerX ] <| text "Go!"
             }
-        ]
-
-
-displayPage : Model -> Element Msg
-displayPage model =
-    let
-        content : Element Msg
-        content =
-            case Decode.decodeString decodeJsonPlan model.currPlanText of
-                Ok jsonPlan ->
-                    PlanTree.render
-                        { onMouseEnterRow = MouseEnterPlanNode
-                        , onMouseLeftRow = MouseLeftPlanNode
-                        }
-                        jsonPlan
-                        model.selectedNode
-
-                Err err ->
-                    text <| Decode.errorToString err
-    in
-    column [ width fill ]
-        [ Input.button
-            (grayButton ++ [ paddingXY 10 0 ])
-            { onPress = Just GoBack
-            , label = el [ centerX ] <| text "Back"
-            }
-        , content
         ]

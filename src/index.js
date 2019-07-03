@@ -2,7 +2,7 @@ import { Elm } from "./Main.elm";
 
 const app = Elm.Main.init({
   node: document.getElementById("root"),
-  flags: { sessionId: localStorage.getItem("sessionId") }
+  flags: localStorage.getItem("sessionId")
 });
 
 app.ports.saveSessionId.subscribe(sessionId => {
